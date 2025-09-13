@@ -1,0 +1,116 @@
+name: Deploy to Hostinger Premium
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        
+    - name: Install and Build Frontend
+      run: |
+        cd frontend
+        npm install
+        npm run build
+        
+    - name: Create Hostinger-compatible package
+      run: |
+        mkdir -p deploy
+        
+        # Copy built React app
+        cp -r frontend/build/* deploy/
+        
+        # Create PHP API for basic functionality
+        mkdir -p deploy/api
+        
+        # Health check endpoint
+        cat > deploy/api/health.php << 'EOF'
+        <?php
+        header('Content-Type: application/json');
+        header('Access-Control-Allow-Origin: *');
+        header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+        header('Access-Control-Allow-Headers: Content-Type, Authorization');
+        
+        echo json_encode([
+            'status' => 'healthy',
+            'timestamp' => date('c'),
+            'message' => 'Business Network Hub running on Hostinger',
+            'server' => 'PHP ' . phpversion()
+        ]);
+        ?>
+        EOF
+        
+        # Main API router
+        cat > deploy/api/index.php << 'EOF'
+        <?php
+        header('Content-Type: application/json');
+        header('Access-Control-Allow-Origin: *');
+        header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+        header('Access-Control-Allow-Headers: Content-Type, Authorization');
+        
+        // Handle preflight requests
+        if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
+            http_response_code(200);
+            exit();
+        }
+        
+        $request = $_SERVER['REQUEST_URI'];
+        $method = $_SERVER['REQUEST_METHOD'];
+        
+        // Route requests
+        if (strpos($request, '/api/health') !== false) {
+            include 'health.php';
+            exit;
+        }
+        
+        // Default API response
+        echo json_encode([
+            'message' => 'Business Network Hub API',
+            'status' => 'running',
+            'method' => $method,
+            'endpoint' => $request,
+            'note' => 'Full features available after database setup'
+        ]);
+        ?>
+        EOF
+        
+        # Create .htaccess for clean URLs
+        cat > deploy/.htaccess << 'EOF'
+        RewriteEngine On
+        
+        # Handle React Router
+        RewriteCond %{REQUEST_FILENAME} !-f
+        RewriteCond %{REQUEST_FILENAME} !-d
+        RewriteCond %{REQUEST_URI} !^/api
+        RewriteRule . /index.html [L]
+        
+        # API routing
+        RewriteCond %{REQUEST_URI} ^/api
+        RewriteRule ^api/(.*)$ /api/index.php [L,QSA]
+        EOF
+        
+        # Update frontend to use relative API URLs
+        find deploy -name "*.js" -exec sed -i 's|http://localhost:8001||g' {} \;
+        
+    - name: Deploy to Hostinger via FTP
+      uses: SamKirkland/FTP-Deploy-Action@4.3.3
+      with:
+        server: ${{ secrets.HOSTINGER_FTP_HOST }}
+        username: ${{ secrets.HOSTINGER_FTP_USER }}
+        password: ${{ secrets.HOSTINGER_FTP_PASS }}
+        local-dir: ./deploy/
+        server-dir: /public_html/
+        exclude: |
+          **/.git*
+          **/.git*/**
+          **/node_modules/**
